@@ -9,7 +9,6 @@ from utils_drl import Agent
 from utils_env import MyEnv
 from utils_memory import ReplayMemory
 
-
 GAMMA = 0.99
 GLOBAL_SEED = 0
 MEM_SIZE = 100_000
@@ -24,7 +23,7 @@ EPS_DECAY = 1000000
 BATCH_SIZE = 32
 POLICY_UPDATE = 4
 TARGET_UPDATE = 10_000
-WARM_STEPS = 50_000
+WARM_STEPS = 50_000 #50_000
 MAX_STEPS = 50_000_000
 EVALUATE_FREQ = 100_000
 
@@ -35,6 +34,10 @@ os.mkdir(SAVE_PREFIX)
 
 torch.manual_seed(new_seed())
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# print(torch.cuda.device_count())
+# print(torch.cuda.is_available())
+
 env = MyEnv(device)
 agent = Agent(
     env.get_action_dim(),
@@ -44,8 +47,11 @@ agent = Agent(
     EPS_START,
     EPS_END,
     EPS_DECAY,
+    restore='./save_model/model_new_best'
 )
 memory = ReplayMemory(STACK_SIZE + 1, MEM_SIZE, device)
+
+
 
 #### Training ####
 obs_queue: deque = deque(maxlen=5)
@@ -53,6 +59,8 @@ done = True
 
 progressive = tqdm(range(MAX_STEPS), total=MAX_STEPS,
                    ncols=50, leave=False, unit="b")
+
+mean_loss=0
 for step in progressive:
     if done:
         observations, _, _ = env.reset()
@@ -60,14 +68,25 @@ for step in progressive:
             obs_queue.append(obs)
 
     training = len(memory) > WARM_STEPS
-    state = env.make_state(obs_queue).to(device).float()
+    state= env.make_state(obs_queue).to(device).float()
     action = agent.run(state, training)
     obs, reward, done = env.step(action)
     obs_queue.append(obs)
     memory.push(env.make_folded_state(obs_queue), action, reward, done)
 
     if step % POLICY_UPDATE == 0 and training:
-        agent.learn(memory, BATCH_SIZE)
+        loss,state_batch,action_batch,reward_batch,next_batch,done_batch=agent.learn(memory, BATCH_SIZE)
+        if mean_loss!=0:
+            mean_loss=0.9*mean_loss+0.1*loss
+        else:
+            mean_loss=loss
+        
+        if loss>mean_loss*1.0125:
+            indices = torch.randint(0, high=BATCH_SIZE, size=(4,))
+            for i in indices:
+                new_batch=next_batch[i][-1].unsqueeze(0)
+                memory.push(torch.cat((state_batch[i],new_batch),dim=0),action_batch[i],reward_batch[i],done_batch[i])
+
 
     if step % TARGET_UPDATE == 0:
         agent.sync()

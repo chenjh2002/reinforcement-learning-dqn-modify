@@ -7,6 +7,7 @@ import random
 import torch
 import torch.nn.functional as F
 import torch.optim as optim
+import torch.nn as nn
 
 from utils_types import (
     TensorStack4,
@@ -44,19 +45,19 @@ class Agent(object):
         self.__r = random.Random()
         self.__r.seed(seed)
 
-        self.__policy = DQN(action_dim, device).to(device)
-        self.__target = DQN(action_dim, device).to(device)
+        self.policy = DQN(action_dim, device).to(device)
+        self.target = DQN(action_dim, device).to(device)
         if restore is None:
-            self.__policy.apply(DQN.init_weights)
+            self.policy.apply(DQN.init_weights)
         else:
-            self.__policy.load_state_dict(torch.load(restore))
-        self.__target.load_state_dict(self.__policy.state_dict())
+            self.policy.load_state_dict(torch.load(restore,map_location=torch.device('cpu')))
+        self.target.load_state_dict(self.policy.state_dict())
         self.__optimizer = optim.Adam(
-            self.__policy.parameters(),
+            self.policy.parameters(),
             lr=0.0000625,
             eps=1.5e-4,
         )
-        self.__target.eval()
+        self.target.eval()
 
     def run(self, state: TensorStack4, training: bool = False, testing: bool = False) -> int:
         """run suggests an action for the given state."""
@@ -67,33 +68,50 @@ class Agent(object):
 
         if testing or self.__r.random() > self.__eps:
             with torch.no_grad():
-                return self.__policy(state).max(1).indices.item()
+                return self.policy(state).max(1).indices.item()
         return self.__r.randint(0, self.__action_dim - 1)
 
     def learn(self, memory: ReplayMemory, batch_size: int) -> float:
         """learn trains the value network via TD-learning."""
+
         state_batch, action_batch, reward_batch, next_batch, done_batch = \
             memory.sample(batch_size)
+        values = self.policy(state_batch.float()).gather(1, action_batch)
 
-        values = self.__policy(state_batch.float()).gather(1, action_batch)
-        values_next = self.__target(next_batch.float()).max(1).values.detach()
-        expected = (self.__gamma * values_next.unsqueeze(1)) * \
+        indexes = torch.argmax(self.target(next_batch.float()),dim=1) #[32]
+        
+        values_next = torch.gather(self.target(next_batch.float()),1,indexes.view(indexes.shape[0],-1)).detach()
+        # values_next = self.target(float(next_batch.cuda())).max(1).values.detach()
+        expected = (self.__gamma * values_next) * \
             (1. - done_batch) + reward_batch
         loss = F.smooth_l1_loss(values, expected)
 
         self.__optimizer.zero_grad()
         loss.backward()
-        for param in self.__policy.parameters():
+        for param in self.policy.parameters():
             param.grad.data.clamp_(-1, 1)
         self.__optimizer.step()
 
-        return loss.item()
+        return loss.item(),state_batch, action_batch, reward_batch, next_batch, done_batch
 
     def sync(self) -> None:
         """sync synchronizes the weights from the policy network to the target
         network."""
-        self.__target.load_state_dict(self.__policy.state_dict())
+        self.target.load_state_dict(self.policy.state_dict())
 
     def save(self, path: str) -> None:
         """save saves the state dict of the policy network."""
-        torch.save(self.__policy.state_dict(), path)
+        torch.save(self.policy.state_dict(), path)
+
+if __name__ =="__main__":
+    agent = Agent(
+        4,
+        1,
+        0.9,
+        100,
+        0,
+        100,
+        0.01,
+    )
+    print(agent.policy)
+
