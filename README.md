@@ -11,4 +11,3 @@ Use `./run.sh` to run the original file to start training without parallel.
 ### train.py(train.sh)
 Use `./train.sh` to run the file of parallel version to start training.
 
-## Training
